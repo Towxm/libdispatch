@@ -40,6 +40,11 @@
 #include <os/tsd.h>
 #endif
 
+#if __has_include(<pthread/private.h>)
+#include <pthread/private.h>
+#endif
+#include <sys/errno.h>
+
 #if !defined(OS_GS_RELATIVE) && (defined(__i386__) || defined(__x86_64__))
 #define OS_GS_RELATIVE __attribute__((address_space(256)))
 #endif
@@ -58,16 +63,15 @@ typedef struct { void *a; void *b; } dispatch_tsd_pair_t;
 #endif // _os_tsd_get_base
 #endif
 
+#if defined(_WIN32)
+#define DISPATCH_TSD_DTOR_CC __stdcall
+#else
+#define DISPATCH_TSD_DTOR_CC
+#endif
+
 #if DISPATCH_USE_DIRECT_TSD
-#ifndef __TSD_THREAD_QOS_CLASS
-#define __TSD_THREAD_QOS_CLASS 4
-#endif
-#ifndef __TSD_RETURN_TO_KERNEL
-#define __TSD_RETURN_TO_KERNEL 5
-#endif
-#ifndef __TSD_MACH_SPECIAL_REPLY
-#define __TSD_MACH_SPECIAL_REPLY 8
-#endif
+#undef errno
+#define errno (*_pthread_errno_address_direct())
 
 static const unsigned long dispatch_priority_key	= __TSD_THREAD_QOS_CLASS;
 static const unsigned long dispatch_r2k_key			= __TSD_RETURN_TO_KERNEL;
@@ -99,15 +103,37 @@ _dispatch_thread_key_create(const unsigned long *k, void (*d)(void *))
 }
 #elif DISPATCH_USE_THREAD_LOCAL_STORAGE
 
+#if defined(_WIN32)
+
 DISPATCH_TSD_INLINE
 static inline void
-_dispatch_thread_key_create(pthread_key_t *k, void (*d)(void *))
+_dispatch_thread_key_create(DWORD *k, void (DISPATCH_TSD_DTOR_CC *d)(void *))
+{
+	*k = FlsAlloc(d);
+	dispatch_assert(*k != FLS_OUT_OF_INDEXES);
+}
+
+extern DWORD __dispatch_tsd_key;
+
+#else
+
+DISPATCH_TSD_INLINE
+static inline void
+_dispatch_thread_key_create(pthread_key_t *k, void (DISPATCH_TSD_DTOR_CC *d)(void *))
 {
 	dispatch_assert_zero(pthread_key_create(k, d));
 }
 
+extern pthread_key_t __dispatch_tsd_key;
+
+#endif
+
 struct dispatch_tsd {
+#if defined(_WIN32)
+	DWORD tid;
+#else
 	pid_t tid;
+#endif
 	void *dispatch_queue_key;
 	void *dispatch_frame_key;
 	void *dispatch_cache_key;
@@ -126,8 +152,8 @@ struct dispatch_tsd {
 	void *dispatch_deferred_items_key;
 };
 
-extern __thread struct dispatch_tsd __dispatch_tsd;
-extern pthread_key_t __dispatch_tsd_key;
+extern _Thread_local struct dispatch_tsd __dispatch_tsd;
+
 extern void libdispatch_tsd_init(void);
 extern void _libdispatch_tsd_cleanup(void *ctx);
 
@@ -285,7 +311,7 @@ _dispatch_thread_setspecific_packed_pair(pthread_key_t k1, pthread_key_t k2,
 }
 #endif
 
-#if TARGET_OS_WIN32
+#if defined(_WIN32)
 #define _dispatch_thread_self() ((uintptr_t)GetCurrentThreadId())
 #else
 #if DISPATCH_USE_DIRECT_TSD
@@ -296,7 +322,7 @@ _dispatch_thread_setspecific_packed_pair(pthread_key_t k1, pthread_key_t k2,
 #endif
 #endif
 
-#if TARGET_OS_WIN32
+#if defined(_WIN32)
 #define _dispatch_thread_port() ((mach_port_t)0)
 #elif !DISPATCH_USE_THREAD_LOCAL_STORAGE
 #if DISPATCH_USE_DIRECT_TSD
@@ -324,7 +350,11 @@ DISPATCH_TSD_INLINE DISPATCH_CONST
 static inline unsigned int
 _dispatch_cpu_number(void)
 {
-#if __has_include(<os/tsd.h>)
+#if TARGET_OS_SIMULATOR
+	size_t n;
+	pthread_cpu_number_np(&n);
+	return (unsigned int)n;
+#elif __has_include(<os/tsd.h>)
 	return _os_cpu_number();
 #elif defined(__x86_64__) || defined(__i386__)
 	struct { uintptr_t p1, p2; } p;

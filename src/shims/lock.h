@@ -29,7 +29,7 @@
 
 #pragma mark - platform macros
 
-DISPATCH_ENUM(dispatch_lock_options, uint32_t,
+DISPATCH_OPTIONS(dispatch_lock_options, uint32_t,
 	DLOCK_LOCK_NONE				= 0x00000000,
 	DLOCK_LOCK_DATA_CONTENTION  = 0x00010000,
 );
@@ -71,6 +71,27 @@ typedef uint32_t dispatch_lock;
 
 #define DLOCK_OWNER_NULL			((dispatch_tid)0)
 #define _dispatch_tid_self()        ((dispatch_tid)(_dispatch_get_tsd_base()->tid))
+
+DISPATCH_ALWAYS_INLINE
+static inline dispatch_tid
+_dispatch_lock_owner(dispatch_lock lock_value)
+{
+	return lock_value & DLOCK_OWNER_MASK;
+}
+
+#elif defined(_WIN32)
+
+#include <Windows.h>
+
+typedef DWORD dispatch_tid;
+typedef uint32_t dispatch_lock;
+
+#define DLOCK_OWNER_NULL			((dispatch_tid)0)
+#define DLOCK_OWNER_MASK			((dispatch_lock)0xfffffffc)
+#define DLOCK_WAITERS_BIT			((dispatch_lock)0x00000001)
+#define DLOCK_FAILED_TRYLOCK_BIT		((dispatch_lock)0x00000002)
+
+#define _dispatch_tid_self()		((dispatch_tid)(_dispatch_get_tsd_base()->tid << 2))
 
 DISPATCH_ALWAYS_INLINE
 static inline dispatch_tid
@@ -192,9 +213,9 @@ typedef HANDLE _dispatch_sema4_t;
 #define _DSEMA4_POLICY_LIFO 0
 #define _DSEMA4_TIMEOUT() ((errno) = ETIMEDOUT, -1)
 
-#define _dispatch_sema4_init(sema, policy) (void)(*(sema) = 0)
-#define _dispatch_sema4_is_created(sema)   (*(sema) != 0)
-void _dispatch_sema4_create_slow(_dispatch_sema4_t *sema, int policy);
+void _dispatch_sema4_init(_dispatch_sema4_t *sema, int policy);
+#define _dispatch_sema4_is_created(sema)   ((void)sema, 1)
+#define _dispatch_sema4_create_slow(sema, policy) ((void)sema, (void)policy)
 
 #else
 #error "port has to implement _dispatch_sema4_t"
@@ -231,7 +252,7 @@ int _dispatch_wait_on_address(uint32_t volatile *address, uint32_t value,
 void _dispatch_wake_by_address(uint32_t volatile *address);
 
 #pragma mark - thread event
-/**
+/*!
  * @typedef dispatch_thread_event_t
  *
  * @abstract
@@ -280,7 +301,7 @@ static inline void
 _dispatch_thread_event_signal(dispatch_thread_event_t dte)
 {
 #if HAVE_UL_COMPARE_AND_WAIT || HAVE_FUTEX
-	if (os_atomic_inc_orig(&dte->dte_value, release) == 0) {
+	if (os_atomic_add_orig(&dte->dte_value, 1u, release) == 0) {
 		// 0 -> 1 transition doesn't need a signal
 		// force a wake even when the value is corrupt,
 		// waiters do the validation
@@ -298,7 +319,7 @@ static inline void
 _dispatch_thread_event_wait(dispatch_thread_event_t dte)
 {
 #if HAVE_UL_COMPARE_AND_WAIT || HAVE_FUTEX
-	if (os_atomic_dec(&dte->dte_value, acquire) == 0) {
+	if (os_atomic_sub(&dte->dte_value, 1u, acquire) == 0) {
 		// 1 -> 0 is always a valid transition, so we can return
 		// for any other value, take the slow path which checks it's not corrupt
 		return;

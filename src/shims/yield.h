@@ -50,7 +50,7 @@
 // exchange at the tail and setting the head/prev pointer.
 #if DISPATCH_HW_CONFIG_UP
 #define _dispatch_wait_until(c) ({ \
-		typeof(c) _c; \
+		__typeof__(c) _c; \
 		int _spins = 0; \
 		for (;;) { \
 			if (likely(_c = (c))) break; \
@@ -59,11 +59,14 @@
 		} \
 		_c; })
 #else
+#ifndef DISPATCH_WAIT_SPINS_WFE
+#define DISPATCH_WAIT_SPINS_WFE 10
+#endif
 #ifndef DISPATCH_WAIT_SPINS // <rdar://problem/15440575>
 #define DISPATCH_WAIT_SPINS 1024
 #endif
 #define _dispatch_wait_until(c) ({ \
-		typeof(c) _c; \
+		__typeof__(c) _c; \
 		int _spins = -(DISPATCH_WAIT_SPINS); \
 		for (;;) { \
 			if (likely(_c = (c))) break; \
@@ -75,6 +78,9 @@
 		} \
 		_c; })
 #endif
+
+DISPATCH_NOT_TAIL_CALLED DISPATCH_EXPORT
+void *_dispatch_wait_for_enqueuer(void **ptr);
 
 #pragma mark -
 #pragma mark _dispatch_contention_wait_until
@@ -92,6 +98,16 @@
 #define _dispatch_contention_spins() \
 		((DISPATCH_CONTENTION_SPINS_MIN) + ((DISPATCH_CONTENTION_SPINS_MAX) - \
 		(DISPATCH_CONTENTION_SPINS_MIN)) / 2)
+#elif defined(_WIN32)
+// Use randomness to prevent threads from resonating at the same frequency and
+// permanently contending. Windows doesn't provide rand_r(), so use a simple
+// LCG. (msvcrt has rand_s(), but its security guarantees aren't optimal here.)
+#define _dispatch_contention_spins() ({ \
+		static os_atomic(unsigned int) _seed = 1; \
+		unsigned int _next = os_atomic_load(&_seed, relaxed); \
+		os_atomic_store(&_seed, _next * 1103515245 + 12345, relaxed); \
+		((_next >> 24) & (DISPATCH_CONTENTION_SPINS_MAX)) | \
+				(DISPATCH_CONTENTION_SPINS_MIN); })
 #else
 // Use randomness to prevent threads from resonating at the same
 // frequency and permanently contending.
@@ -134,16 +150,26 @@
 		DISPATCH_YIELD_THREAD_SWITCH_OPTION, (mach_msg_timeout_t)(n))
 #define _dispatch_preemption_yield_to(th, n) thread_switch(th, \
 		DISPATCH_YIELD_THREAD_SWITCH_OPTION, (mach_msg_timeout_t)(n))
+#elif HAVE_PTHREAD_YIELD_NP
+#define _dispatch_preemption_yield(n) { (void)n; pthread_yield_np(); }
+#define _dispatch_preemption_yield_to(th, n) { (void)n; pthread_yield_np(); }
+#elif defined(_WIN32)
+#define _dispatch_preemption_yield(n) { (void)n; Sleep(0); }
+#define _dispatch_preemption_yield_to(th, n) { (void)n; Sleep(0); }
 #else
-#define _dispatch_preemption_yield(n) pthread_yield_np()
-#define _dispatch_preemption_yield_to(th, n) pthread_yield_np()
+#define _dispatch_preemption_yield(n) { (void)n; sched_yield(); }
+#define _dispatch_preemption_yield_to(th, n) { (void)n; sched_yield(); }
 #endif // HAVE_MACH
 
 #pragma mark -
 #pragma mark _dispatch_contention_usleep
 
 #ifndef DISPATCH_CONTENTION_USLEEP_START
+#if defined(_WIN32)
+#define DISPATCH_CONTENTION_USLEEP_START 1000   // Must be >= 1ms for Sleep()
+#else
 #define DISPATCH_CONTENTION_USLEEP_START 500
+#endif
 #endif
 #ifndef DISPATCH_CONTENTION_USLEEP_MAX
 #define DISPATCH_CONTENTION_USLEEP_MAX 100000
@@ -158,7 +184,11 @@
 		SWITCH_OPTION_WAIT, (((u)-1)/1000)+1)
 #endif
 #else
+#if defined(_WIN32)
+#define _dispatch_contention_usleep(u) Sleep((u) / 1000)
+#else
 #define _dispatch_contention_usleep(u) usleep((u))
+#endif
 #endif // HAVE_MACH
 
 #endif // __DISPATCH_SHIMS_YIELD__

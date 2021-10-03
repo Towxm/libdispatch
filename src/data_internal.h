@@ -57,10 +57,10 @@ DISPATCH_CLASS_DECL(data, OBJECT);
 
 struct dispatch_data_s {
 #if DISPATCH_DATA_IS_BRIDGED_TO_NSDATA
-	const void *do_vtable;
+	const void *__ptrauth_objc_isa_pointer do_vtable;
 	dispatch_queue_t do_targetq;
 	void *ctxt;
-	void *finalizer;
+	dispatch_function_t DISPATCH_FUNCTION_POINTER finalizer;
 #else
 	DISPATCH_OBJECT_HEADER(data);
 #endif // DISPATCH_DATA_IS_BRIDGED_TO_NSDATA
@@ -107,8 +107,8 @@ void _dispatch_data_dispose(dispatch_data_t data, bool *allow_free);
 void _dispatch_data_set_target_queue(struct dispatch_data_s *dd,
 		dispatch_queue_t tq);
 #endif
+DISPATCH_COLD
 size_t _dispatch_data_debug(dispatch_data_t data, char* buf, size_t bufsiz);
-const void* _dispatch_data_get_flattened_bytes(struct dispatch_data_s *dd);
 
 #if !defined(__cplusplus)
 extern const dispatch_block_t _dispatch_data_destructor_inline;

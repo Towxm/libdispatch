@@ -97,7 +97,7 @@ void _voucher_activity_swap(firehose_activity_id_t old_id,
 void _voucher_xref_dispose(voucher_t voucher);
 void _voucher_dispose(voucher_t voucher);
 size_t _voucher_debug(voucher_t v, char* buf, size_t bufsiz);
-void _voucher_thread_cleanup(void *voucher);
+void DISPATCH_TSD_DTOR_CC _voucher_thread_cleanup(void *voucher);
 mach_voucher_t _voucher_get_mach_voucher(voucher_t voucher);
 voucher_t _voucher_create_without_importance(voucher_t voucher);
 voucher_t _voucher_create_accounting_voucher(voucher_t voucher);
@@ -155,7 +155,7 @@ OS_ENUM(voucher_fields, uint16_t,
 
 typedef struct voucher_s {
 	_OS_OBJECT_HEADER(
-	struct voucher_vtable_s *os_obj_isa,
+	struct voucher_vtable_s *__ptrauth_objc_isa_pointer os_obj_isa,
 	os_obj_ref_cnt,
 	os_obj_xref_cnt);
 	struct voucher_hash_entry_s {
@@ -233,7 +233,7 @@ _voucher_hash_store_to_prev_ptr(uintptr_t prev_ptr, struct voucher_s *v)
 #if VOUCHER_ENABLE_RECIPE_OBJECTS
 typedef struct voucher_recipe_s {
 	_OS_OBJECT_HEADER(
-	const _os_object_vtable_s *os_obj_isa,
+	const _os_object_vtable_s *__ptrauth_objc_isa_pointer os_obj_isa,
 	os_obj_ref_cnt,
 	os_obj_xref_cnt);
 	size_t vr_allocation_size;
@@ -309,7 +309,7 @@ _voucher_release_inline(struct voucher_s *voucher)
 	if (unlikely(xref_cnt < -1)) {
 		_OS_OBJECT_CLIENT_CRASH("Voucher over-release");
 	}
-	return _os_object_xref_dispose((_os_object_t)voucher);
+	return _voucher_xref_dispose((voucher_t)voucher);
 }
 
 #if DISPATCH_PURE_C

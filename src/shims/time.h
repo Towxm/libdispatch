@@ -31,7 +31,7 @@
 #error "Please #include <dispatch/dispatch.h> instead of this file directly."
 #endif
 
-#if TARGET_OS_WIN32
+#if defined(_WIN32)
 static inline unsigned int
 sleep(unsigned int seconds)
 {
@@ -107,14 +107,15 @@ _dispatch_get_nanoseconds(void)
 	struct timespec ts;
 	dispatch_assume_zero(clock_gettime(CLOCK_REALTIME, &ts));
 	return _dispatch_timespec_to_nano(ts);
-#elif TARGET_OS_WIN32
+#elif defined(_WIN32)
+	static const uint64_t kNTToUNIXBiasAdjustment = 11644473600 * NSEC_PER_SEC;
 	// FILETIME is 100-nanosecond intervals since January 1, 1601 (UTC).
 	FILETIME ft;
 	ULARGE_INTEGER li;
-	GetSystemTimeAsFileTime(&ft);
+	GetSystemTimePreciseAsFileTime(&ft);
 	li.LowPart = ft.dwLowDateTime;
 	li.HighPart = ft.dwHighDateTime;
-	return li.QuadPart * 100ull;
+	return li.QuadPart * 100ull - kNTToUNIXBiasAdjustment;
 #else
 	struct timeval tv;
 	dispatch_assert_zero(gettimeofday(&tv, NULL));
@@ -122,22 +123,36 @@ _dispatch_get_nanoseconds(void)
 #endif
 }
 
+/* On the use of clock sources in the CLOCK_MONOTONIC family
+ *
+ * The code below requires monotonic clock sources that only tick
+ * while the machine is running.
+ *
+ * Per POSIX, the CLOCK_MONOTONIC family is supposed to tick during
+ * machine sleep; this is not the case on Linux, and that behavior
+ * became part of the Linux ABI.
+ *
+ * Using the CLOCK_MONOTONIC family on POSIX-compliant platforms
+ * will lead to bugs, hence its use is restricted to Linux.
+ */
+
 static inline uint64_t
 _dispatch_uptime(void)
 {
 #if HAVE_MACH_ABSOLUTE_TIME
 	return mach_absolute_time();
-#elif defined(__linux__)
+#elif HAVE_DECL_CLOCK_MONOTONIC && defined(__linux__)
 	struct timespec ts;
 	dispatch_assume_zero(clock_gettime(CLOCK_MONOTONIC, &ts));
 	return _dispatch_timespec_to_nano(ts);
-#elif HAVE_DECL_CLOCK_UPTIME
+#elif HAVE_DECL_CLOCK_UPTIME && !defined(__linux__)
 	struct timespec ts;
 	dispatch_assume_zero(clock_gettime(CLOCK_UPTIME, &ts));
 	return _dispatch_timespec_to_nano(ts);
-#elif TARGET_OS_WIN32
-	LARGE_INTEGER now;
-	return QueryPerformanceCounter(&now) ? now.QuadPart : 0;
+#elif defined(_WIN32)
+	ULONGLONG ullUnbiasedTime;
+	_dispatch_QueryUnbiasedInterruptTimePrecise(&ullUnbiasedTime);
+	return ullUnbiasedTime * 100;
 #else
 #error platform needs to implement _dispatch_uptime()
 #endif
@@ -156,9 +171,10 @@ _dispatch_monotonic_time(void)
 	struct timespec ts;
 	dispatch_assume_zero(clock_gettime(CLOCK_MONOTONIC, &ts));
 	return _dispatch_timespec_to_nano(ts);
-#elif TARGET_OS_WIN32
-	LARGE_INTEGER now;
-	return QueryPerformanceCounter(&now) ? now.QuadPart : 0;
+#elif defined(_WIN32)
+	ULONGLONG ullTime;
+	_dispatch_QueryInterruptTimePrecise(&ullTime);
+	return ullTime * 100ull;
 #else
 #error platform needs to implement _dispatch_monotonic_time()
 #endif
@@ -170,11 +186,11 @@ _dispatch_approximate_time(void)
 {
 #if HAVE_MACH_APPROXIMATE_TIME
 	return mach_approximate_time();
-#elif defined(__linux__)
+#elif HAVE_DECL_CLOCK_MONOTONIC_COARSE && defined(__linux__)
 	struct timespec ts;
 	dispatch_assume_zero(clock_gettime(CLOCK_MONOTONIC_COARSE, &ts));
 	return _dispatch_timespec_to_nano(ts);
-#elif HAVE_DECL_CLOCK_UPTIME_FAST
+#elif HAVE_DECL_CLOCK_UPTIME_FAST && !defined(__linux__)
 	struct timespec ts;
 	dispatch_assume_zero(clock_gettime(CLOCK_UPTIME_FAST, &ts));
 	return _dispatch_timespec_to_nano(ts);
@@ -238,17 +254,34 @@ _dispatch_time_now_cached(dispatch_clock_t clock,
 
 DISPATCH_ALWAYS_INLINE
 static inline void
-_dispatch_time_to_clock_and_value(dispatch_time_t time,
+_dispatch_time_to_clock_and_value(dispatch_time_t time, bool allow_now,
 		dispatch_clock_t *clock, uint64_t *value)
 {
 	uint64_t actual_value;
+
+	if (allow_now) {
+		switch (time) {
+		case DISPATCH_TIME_NOW:
+			*clock = DISPATCH_CLOCK_UPTIME;
+			*value = _dispatch_uptime();
+			return;
+		case DISPATCH_MONOTONICTIME_NOW:
+			*clock = DISPATCH_CLOCK_MONOTONIC;
+			*value = _dispatch_monotonic_time();
+			return;
+		case DISPATCH_WALLTIME_NOW:
+			*clock = DISPATCH_CLOCK_WALL;
+			*value = _dispatch_get_nanoseconds();
+			return;
+		}
+	}
+
 	if ((int64_t)time < 0) {
 		// Wall time or mach continuous time
 		if (time & DISPATCH_WALLTIME_MASK) {
 			// Wall time (value 11 in bits 63, 62)
 			*clock = DISPATCH_CLOCK_WALL;
-			actual_value = time == DISPATCH_WALLTIME_NOW ?
-					_dispatch_get_nanoseconds() : (uint64_t)-time;
+			actual_value = (uint64_t)-time;
 		} else {
 			// Continuous time (value 10 in bits 63, 62).
 			*clock = DISPATCH_CLOCK_MONOTONIC;

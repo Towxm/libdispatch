@@ -100,7 +100,7 @@ __BEGIN_DECLS
  * for synchronous execution or when the dispatch block object is invoked
  * directly.
  */
-DISPATCH_ENUM(dispatch_block_flags, unsigned long,
+DISPATCH_OPTIONS(dispatch_block_flags, unsigned long,
 	DISPATCH_BLOCK_BARRIER
 			DISPATCH_ENUM_API_AVAILABLE(macos(10.10), ios(8.0)) = 0x1,
 	DISPATCH_BLOCK_DETACHED
@@ -323,7 +323,7 @@ dispatch_block_perform(dispatch_block_flags_t flags,
  */
 API_AVAILABLE(macos(10.10), ios(8.0))
 DISPATCH_EXPORT DISPATCH_NONNULL1 DISPATCH_NOTHROW
-long
+intptr_t
 dispatch_block_wait(dispatch_block_t block, dispatch_time_t timeout);
 
 /*!
@@ -416,7 +416,7 @@ dispatch_block_cancel(dispatch_block_t block);
 API_AVAILABLE(macos(10.10), ios(8.0))
 DISPATCH_EXPORT DISPATCH_NONNULL_ALL DISPATCH_WARN_RESULT DISPATCH_PURE
 DISPATCH_NOTHROW
-long
+intptr_t
 dispatch_block_testcancel(dispatch_block_t block);
 
 __END_DECLS

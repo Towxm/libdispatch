@@ -29,16 +29,23 @@
 #include "protocolServer.h"
 #endif
 
+#ifdef __linux__
+// The clang compiler in Ubuntu 18.04 has a bug that causes it to crash
+// when compiling _dispatch_bug_kevent_vanished(). As a workaround, use a
+// less capable version of this function on Linux until a fixed version
+// of the compiler is available.
+#define RDAR_49023449 1
+#endif // __linux__
+
 #pragma mark -
 #pragma mark dispatch_init
-
 
 #if USE_LIBDISPATCH_INIT_CONSTRUCTOR
 DISPATCH_NOTHROW __attribute__((constructor))
 void
 _libdispatch_init(void);
 
-DISPATCH_EXPORT DISPATCH_NOTHROW
+DISPATCH_NOTHROW
 void
 _libdispatch_init(void)
 {
@@ -46,6 +53,7 @@ _libdispatch_init(void)
 }
 #endif
 
+#if !defined(_WIN32)
 DISPATCH_EXPORT DISPATCH_NOTHROW
 void
 dispatch_atfork_prepare(void)
@@ -97,6 +105,7 @@ _dispatch_sigmask(void)
 	r |= pthread_sigmask(SIG_BLOCK, &mask, NULL);
 	return dispatch_assume_zero(r);
 }
+#endif
 
 #pragma mark -
 #pragma mark dispatch_globals
@@ -111,8 +120,12 @@ void (*_dispatch_end_NSAutoReleasePool)(void *);
 #endif
 
 #if DISPATCH_USE_THREAD_LOCAL_STORAGE
-__thread struct dispatch_tsd __dispatch_tsd;
+_Thread_local struct dispatch_tsd __dispatch_tsd;
+#if defined(_WIN32)
+DWORD __dispatch_tsd_key;
+#else
 pthread_key_t __dispatch_tsd_key;
+#endif
 #elif !DISPATCH_USE_DIRECT_TSD
 pthread_key_t dispatch_queue_key;
 pthread_key_t dispatch_frame_key;
@@ -129,6 +142,8 @@ pthread_key_t dispatch_wlh_key;
 pthread_key_t dispatch_voucher_key;
 pthread_key_t dispatch_deferred_items_key;
 #endif // !DISPATCH_USE_DIRECT_TSD && !DISPATCH_USE_THREAD_LOCAL_STORAGE
+
+pthread_key_t _os_workgroup_key;
 
 #if VOUCHER_USE_MACH_VOUCHER
 dispatch_once_t _voucher_task_mach_voucher_pred;
@@ -152,7 +167,7 @@ bool _dispatch_kevent_workqueue_enabled = 1;
 
 DISPATCH_HW_CONFIG();
 uint8_t _dispatch_unsafe_fork;
-uint8_t _dispatch_mode;
+uint8_t _dispatch_mode = DISPATCH_MODE_NO_FAULTS;
 bool _dispatch_child_of_unsafe_fork;
 #if DISPATCH_USE_MEMORYPRESSURE_SOURCE
 bool _dispatch_memory_warn;
@@ -351,12 +366,24 @@ struct dispatch_queue_global_s _dispatch_root_queues[] = {
 	),
 };
 
+const struct dispatch_queue_global_s _dispatch_custom_workloop_root_queue = {
+	DISPATCH_GLOBAL_OBJECT_HEADER(queue_global),
+	.dq_state = DISPATCH_ROOT_QUEUE_STATE_INIT_VALUE,
+	.do_ctxt = NULL,
+	.dq_label = "com.apple.root.workloop-custom",
+	.dq_atomic_flags = DQF_WIDTH(DISPATCH_QUEUE_WIDTH_POOL),
+	.dq_priority = _dispatch_priority_make_fallback(DISPATCH_QOS_DEFAULT) |
+			DISPATCH_PRIORITY_SATURATED_OVERRIDE,
+	.dq_serialnum = DISPATCH_QUEUE_SERIAL_NUMBER_WLF,
+	.dgq_thread_pool_size = 1,
+};
+
 unsigned long volatile _dispatch_queue_serial_numbers =
 		DISPATCH_QUEUE_SERIAL_NUMBER_INIT;
 
 
 dispatch_queue_global_t
-dispatch_get_global_queue(long priority, unsigned long flags)
+dispatch_get_global_queue(intptr_t priority, uintptr_t flags)
 {
 	dispatch_assert(countof(_dispatch_root_queues) ==
 			DISPATCH_ROOT_QUEUE_COUNT);
@@ -426,6 +453,12 @@ _dispatch_queue_attr_to_info(dispatch_queue_attr_t dqa)
 
 	if (dqa < _dispatch_queue_attrs ||
 			dqa >= &_dispatch_queue_attrs[DISPATCH_QUEUE_ATTR_COUNT]) {
+#ifndef __APPLE__
+		if (memcmp(dqa, &_dispatch_queue_attrs[0],
+				sizeof(struct dispatch_queue_attr_s)) == 0) {
+			dqa = (dispatch_queue_attr_t)&_dispatch_queue_attrs[0];
+		} else
+#endif // __APPLE__
 		DISPATCH_CLIENT_CRASH(dqa->do_vtable, "Invalid queue attribute");
 	}
 
@@ -437,7 +470,7 @@ _dispatch_queue_attr_to_info(dispatch_queue_attr_t dqa)
 	dqai.dqai_concurrent = !(idx % DISPATCH_QUEUE_ATTR_CONCURRENCY_COUNT);
 	idx /= DISPATCH_QUEUE_ATTR_CONCURRENCY_COUNT;
 
-	dqai.dqai_relpri = -(idx % DISPATCH_QUEUE_ATTR_PRIO_COUNT);
+	dqai.dqai_relpri = -(int)(idx % DISPATCH_QUEUE_ATTR_PRIO_COUNT);
 	idx /= DISPATCH_QUEUE_ATTR_PRIO_COUNT;
 
 	dqai.dqai_qos = idx % DISPATCH_QUEUE_ATTR_QOS_COUNT;
@@ -522,8 +555,6 @@ dispatch_queue_attr_make_with_autorelease_frequency(dispatch_queue_attr_t dqa,
 	case DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM:
 	case DISPATCH_AUTORELEASE_FREQUENCY_NEVER:
 		break;
-	default:
-		return (dispatch_queue_attr_t)dqa;
 	}
 	dispatch_queue_attr_info_t dqai = _dispatch_queue_attr_to_info(dqa);
 	dqai.dqai_autorelease_frequency = (uint16_t)frequency;
@@ -628,8 +659,7 @@ DISPATCH_VTABLE_INSTANCE(disk,
 
 DISPATCH_NOINLINE
 static void
-_dispatch_queue_no_activate(dispatch_queue_class_t dqu,
-		DISPATCH_UNUSED bool *allow_resume)
+_dispatch_queue_no_activate(dispatch_queue_class_t dqu)
 {
 	DISPATCH_INTERNAL_CRASH(dx_type(dqu._dq), "dq_activate called");
 }
@@ -748,6 +778,17 @@ DISPATCH_VTABLE_INSTANCE(source,
 
 	.dq_activate    = _dispatch_source_activate,
 	.dq_wakeup      = _dispatch_source_wakeup,
+	.dq_push        = _dispatch_lane_push,
+);
+
+DISPATCH_VTABLE_INSTANCE(channel,
+	.do_type        = DISPATCH_CHANNEL_TYPE,
+	.do_dispose     = _dispatch_channel_dispose,
+	.do_debug       = _dispatch_channel_debug,
+	.do_invoke      = _dispatch_channel_invoke,
+
+	.dq_activate    = _dispatch_lane_activate,
+	.dq_wakeup      = _dispatch_channel_wakeup,
 	.dq_push        = _dispatch_lane_push,
 );
 
@@ -943,6 +984,7 @@ _dispatch_continuation_get_function_symbol(dispatch_continuation_t dc)
 	return dc->dc_func;
 }
 
+#if HAVE_MACH
 void
 _dispatch_bug_kevent_client(const char *msg, const char *filter,
 		const char *operation, int err, uint64_t ident, uint64_t udata,
@@ -959,9 +1001,11 @@ _dispatch_bug_kevent_client(const char *msg, const char *filter,
 			dc = du._dr->ds_handler[DS_EVENT_HANDLER];
 			if (dc) func = _dispatch_continuation_get_function_symbol(dc);
 			break;
+#if HAVE_MACH
 		case DISPATCH_MACH_CHANNEL_TYPE:
 			func = du._dmrr->dmrr_handler_func;
 			break;
+#endif // HAVE_MACH
 		}
 		filter = dux_type(du._du)->dst_kind;
 	}
@@ -969,21 +1013,38 @@ _dispatch_bug_kevent_client(const char *msg, const char *filter,
 	if (operation && err) {
 		_dispatch_log_fault("LIBDISPATCH_STRICT: _dispatch_bug_kevent_client",
 				"BUG in libdispatch client: %s %s: \"%s\" - 0x%x "
-				"{ 0x%llx[%s], ident: %lld / 0x%llx, handler: %p }",
+				"{ 0x%"PRIx64"[%s], ident: %"PRId64" / 0x%"PRIx64", handler: %p }",
 				msg, operation, strerror(err), err,
 				udata, filter, ident, ident, func);
 	} else if (operation) {
 		_dispatch_log_fault("LIBDISPATCH_STRICT: _dispatch_bug_kevent_client",
 				"BUG in libdispatch client: %s %s"
-				"{ 0x%llx[%s], ident: %lld / 0x%llx, handler: %p }",
+				"{ 0x%"PRIx64"[%s], ident: %"PRId64" / 0x%"PRIx64", handler: %p }",
 				msg, operation, udata, filter, ident, ident, func);
 	} else {
 		_dispatch_log_fault("LIBDISPATCH_STRICT: _dispatch_bug_kevent_client",
 				"BUG in libdispatch: %s: \"%s\" - 0x%x"
-				"{ 0x%llx[%s], ident: %lld / 0x%llx, handler: %p }",
+				"{ 0x%"PRIx64"[%s], ident: %"PRId64" / 0x%"PRIx64", handler: %p }",
 				msg, strerror(err), err, udata, filter, ident, ident, func);
 	}
 }
+#endif // HAVE_MACH
+
+#if RDAR_49023449
+
+// The clang compiler on Ubuntu18.04 crashes when compiling the full version of
+// this function. This reduced version avoids the crash but logs less useful
+// information.
+void
+_dispatch_bug_kevent_vanished(dispatch_unote_t du)
+{
+	_dispatch_log_fault("LIBDISPATCH_STRICT: _dispatch_bug_kevent_vanished",
+			"BUG in libdispatch client: %s, monitored resource vanished before "
+			"the source cancel handler was invoked",
+			dux_type(du._du)->dst_kind);
+}
+
+#else // RDAR_49023449
 
 void
 _dispatch_bug_kevent_vanished(dispatch_unote_t du)
@@ -998,18 +1059,26 @@ _dispatch_bug_kevent_vanished(dispatch_unote_t du)
 		dc = du._dr->ds_handler[DS_EVENT_HANDLER];
 		if (dc) func = _dispatch_continuation_get_function_symbol(dc);
 		break;
+#if HAVE_MACH
 	case DISPATCH_MACH_CHANNEL_TYPE:
 		func = du._dmrr->dmrr_handler_func;
 		break;
+#endif // MACH
 	}
 	_dispatch_log_fault("LIBDISPATCH_STRICT: _dispatch_bug_kevent_vanished",
 			"BUG in libdispatch client: %s, monitored resource vanished before "
 			"the source cancel handler was invoked "
+#if !defined(_WIN32)
 			"{ %p[%s], ident: %d / 0x%x, handler: %p }",
+#else // !defined(_WIN32)
+			"{ %p[%s], ident: %" PRIdPTR " / 0x%" PRIxPTR ", handler: %p }",
+#endif // !defined(_WIN32)
 			dux_type(du._du)->dst_kind, dou._dq,
 			dou._dq->dq_label ? dou._dq->dq_label : "<unknown>",
 			du._du->du_ident, du._du->du_ident, func);
 }
+
+#endif // RDAR_49023449
 
 DISPATCH_NOINLINE DISPATCH_WEAK
 void
@@ -1059,26 +1128,61 @@ _dispatch_logv_init(void *context DISPATCH_UNUSED)
 			log_to_file = true;
 		} else if (strcmp(e, "stderr") == 0) {
 			log_to_file = true;
+#if defined(_WIN32)
+			dispatch_logfile = _fileno(stderr);
+#else
 			dispatch_logfile = STDERR_FILENO;
+#endif
 		}
 	}
 	if (!dispatch_log_disabled) {
 		if (log_to_file && dispatch_logfile == -1) {
+#if defined(_WIN32)
+			char path[MAX_PATH + 1] = {0};
+			DWORD dwLength = GetTempPathA(MAX_PATH, path);
+			dispatch_assert(dwLength <= MAX_PATH + 1);
+			snprintf(&path[dwLength], MAX_PATH - dwLength, "libdispatch.%lu.log",
+					GetCurrentProcessId());
+			dispatch_logfile = _open(path, O_WRONLY | O_APPEND | O_CREAT, 0666);
+#else
 			char path[PATH_MAX];
 			snprintf(path, sizeof(path), "/var/tmp/libdispatch.%d.log",
 					getpid());
 			dispatch_logfile = open(path, O_WRONLY | O_APPEND | O_CREAT |
 					O_NOFOLLOW | O_CLOEXEC, 0666);
+#endif
 		}
 		if (dispatch_logfile != -1) {
 			struct timeval tv;
+#if defined(_WIN32)
+			DWORD dwTime = GetTickCount();
+			tv.tv_sec = dwTime / 1000;
+			tv.tv_usec = 1000 * (dwTime % 1000);
+#else
 			gettimeofday(&tv, NULL);
+#endif
 #if DISPATCH_DEBUG
 			dispatch_log_basetime = _dispatch_uptime();
 #endif
+#if defined(_WIN32)
+			char szProgramName[MAX_PATH + 1] = {0};
+			GetModuleFileNameA(NULL, szProgramName, MAX_PATH);
+
+			char szMessage[512];
+			int len = snprintf(szMessage, sizeof(szMessage),
+					"=== log file opened for %s[%lu] at %ld.%06u ===",
+					szProgramName, GetCurrentProcessId(), tv.tv_sec,
+					(int)tv.tv_usec);
+			if (len > 0) {
+				len = MIN(len, sizeof(szMessage) - 1);
+				_write(dispatch_logfile, szMessage, len);
+				_write(dispatch_logfile, "\n", 1);
+			}
+#else
 			dprintf(dispatch_logfile, "=== log file opened for %s[%u] at "
 					"%ld.%06u ===\n", getprogname() ?: "", getpid(),
 					tv.tv_sec, (int)tv.tv_usec);
+#endif
 		}
 	}
 }
@@ -1090,7 +1194,12 @@ _dispatch_log_file(char *buf, size_t len)
 
 	buf[len++] = '\n';
 retry:
+#if defined(_WIN32)
+	dispatch_assert(len <= UINT_MAX);
+	r = _write(dispatch_logfile, buf, (unsigned int)len);
+#else
 	r = write(dispatch_logfile, buf, len);
+#endif
 	if (unlikely(r == -1) && errno == EINTR) {
 		goto retry;
 	}
@@ -1106,7 +1215,7 @@ _dispatch_logv_file(const char *msg, va_list ap)
 
 #if DISPATCH_DEBUG
 	offset += dsnprintf(&buf[offset], bufsiz - offset, "%llu\t",
-			_dispatch_uptime() - dispatch_log_basetime);
+			(unsigned long long)_dispatch_uptime() - dispatch_log_basetime);
 #endif
 	r = vsnprintf(&buf[offset], bufsiz - offset, msg, ap);
 	if (r < 0) return;
@@ -1133,6 +1242,36 @@ _dispatch_vsyslog(const char *msg, va_list ap)
 		_dispatch_syslog(str);
 		free(str);
 	}
+}
+#elif defined(_WIN32)
+static inline void
+_dispatch_syslog(const char *msg)
+{
+	OutputDebugStringA(msg);
+}
+
+static inline void
+_dispatch_vsyslog(const char *msg, va_list ap)
+{
+	va_list argp;
+
+	va_copy(argp, ap);
+
+	int length = _vscprintf(msg, ap);
+	if (length == -1)
+		return;
+
+	char *buffer = malloc((size_t)length + 1);
+	if (buffer == NULL)
+		return;
+
+	_vsnprintf(buffer, (size_t)length + 1, msg, argp);
+
+	va_end(argp);
+
+	_dispatch_syslog(buffer);
+
+	free(buffer);
 }
 #else // DISPATCH_USE_SIMPLE_ASL
 static inline void
@@ -1200,7 +1339,7 @@ _dispatch_debugv(dispatch_object_t dou, const char *msg, va_list ap)
 	int r;
 #if DISPATCH_DEBUG && !DISPATCH_USE_OS_DEBUG_LOG
 	offset += dsnprintf(&buf[offset], bufsiz - offset, "%llu\t\t%p\t",
-			_dispatch_uptime() - dispatch_log_basetime,
+			(unsigned long long)_dispatch_uptime() - dispatch_log_basetime,
 			(void *)_dispatch_thread_self());
 #endif
 	if (dou._do) {
@@ -1263,7 +1402,7 @@ void
 _dispatch_temporary_resource_shortage(void)
 {
 	sleep(1);
-	asm("");  // prevent tailcall
+	__asm__ __volatile__("");  // prevent tailcall
 }
 
 void *
@@ -1276,7 +1415,7 @@ _dispatch_calloc(size_t num_items, size_t size)
 	return buf;
 }
 
-/**
+/*
  * If the source string is mutable, allocates memory and copies the contents.
  * Otherwise returns the source string.
  */
@@ -1433,7 +1572,7 @@ _os_object_t
 _os_object_alloc(const void *cls, size_t size)
 {
 	if (!cls) cls = &_os_object_vtable;
-	return _os_object_alloc_realized(cls, size);
+	return _os_object_alloc_realized((const void * _Nonnull) cls, size);
 }
 
 void

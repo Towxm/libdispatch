@@ -50,7 +50,7 @@
 #if USE_OBJC
 #define DISPATCH_OBJC_CLASS_DECL(name) \
 		extern void *DISPATCH_CLASS_SYMBOL(name) \
-				asm(DISPATCH_CLASS_RAW_SYMBOL_NAME(name))
+				__asm__(DISPATCH_CLASS_RAW_SYMBOL_NAME(name))
 #endif
 
 // define a new proper class
@@ -65,7 +65,7 @@
 		}; \
 		OS_OBJECT_EXTRA_VTABLE_DECL(name, name) \
 		extern const struct name##_vtable_s OS_OBJECT_CLASS_SYMBOL(name) \
-				asm(OS_OBJC_CLASS_RAW_SYMBOL_NAME(OS_OBJECT_CLASS(name)))
+				__asm__(OS_OBJC_CLASS_RAW_SYMBOL_NAME(OS_OBJECT_CLASS(name)))
 
 #if OS_OBJECT_SWIFT3
 #define OS_OBJECT_INTERNAL_CLASS_DECL(name, super, ...) \
@@ -105,7 +105,7 @@
 		struct name##_s; \
 		OS_OBJECT_EXTRA_VTABLE_DECL(name, ctype) \
 		extern const struct ctype##_vtable_s OS_OBJECT_CLASS_SYMBOL(name) \
-				asm(OS_OBJC_CLASS_RAW_SYMBOL_NAME(OS_OBJECT_CLASS(name)))
+				__asm__(OS_OBJC_CLASS_RAW_SYMBOL_NAME(OS_OBJECT_CLASS(name)))
 
 #if OS_OBJECT_SWIFT3
 // define a new internal subclass used in a class cluster
@@ -178,10 +178,12 @@
 
 #define DISPATCH_OBJECT_VTABLE_HEADER(x) \
 	unsigned long const do_type; \
-	void (*const do_dispose)(struct x##_s *, bool *allow_free); \
-	size_t (*const do_debug)(struct x##_s *, char *, size_t); \
-	void (*const do_invoke)(struct x##_s *, dispatch_invoke_context_t, \
-			dispatch_invoke_flags_t)
+	void DISPATCH_VTABLE_ENTRY(do_dispose)(struct x##_s *, \
+			bool *allow_free); \
+	size_t DISPATCH_VTABLE_ENTRY(do_debug)(struct x##_s *, \
+			char *, size_t); \
+	void DISPATCH_VTABLE_ENTRY(do_invoke)(struct x##_s *, \
+			dispatch_invoke_context_t, dispatch_invoke_flags_t)
 #else
 #define DISPATCH_VTABLE_SUBCLASS_INSTANCE(name, ctype, ...) \
 		OS_OBJECT_VTABLE_SUBCLASS_INSTANCE(dispatch_##name, dispatch_##ctype, \
@@ -191,19 +193,21 @@
 #define DISPATCH_OBJECT_VTABLE_HEADER(x) \
 	unsigned long const do_type; \
 	const char *const do_kind; \
-	void (*const do_dispose)(struct x##_s *, bool *allow_free); \
-	size_t (*const do_debug)(struct x##_s *, char *, size_t); \
-	void (*const do_invoke)(struct x##_s *, dispatch_invoke_context_t, \
-			dispatch_invoke_flags_t)
+	void DISPATCH_VTABLE_ENTRY(do_dispose)(struct x##_s *, \
+			bool *allow_free); \
+	size_t DISPATCH_VTABLE_ENTRY(do_debug)(struct x##_s *, \
+			char *, size_t); \
+	void DISPATCH_VTABLE_ENTRY(do_invoke)(struct x##_s *, \
+			dispatch_invoke_context_t, dispatch_invoke_flags_t)
 #endif
 
 #define DISPATCH_QUEUE_VTABLE_HEADER(x); \
 	DISPATCH_OBJECT_VTABLE_HEADER(x); \
-	void (*const dq_activate)(dispatch_queue_class_t, bool *allow_resume); \
-	void (*const dq_wakeup)(dispatch_queue_class_t, dispatch_qos_t, \
-			dispatch_wakeup_flags_t); \
-	void (*const dq_push)(dispatch_queue_class_t, dispatch_object_t, \
-			dispatch_qos_t)
+	void DISPATCH_VTABLE_ENTRY(dq_activate)(dispatch_queue_class_t); \
+	void DISPATCH_VTABLE_ENTRY(dq_wakeup)(dispatch_queue_class_t, \
+			dispatch_qos_t, dispatch_wakeup_flags_t); \
+	void DISPATCH_VTABLE_ENTRY(dq_push)(dispatch_queue_class_t, \
+			dispatch_object_t, dispatch_qos_t)
 
 #define dx_vtable(x) (&(x)->do_vtable->_os_obj_vtable)
 #define dx_type(x) dx_vtable(x)->do_type
@@ -240,7 +244,7 @@
 #define DISPATCH_OBJECT_LISTLESS ((void *)0x89abcdef)
 #endif
 
-DISPATCH_ENUM(dispatch_wakeup_flags, uint32_t,
+DISPATCH_OPTIONS(dispatch_wakeup_flags, uint32_t,
 	// The caller of dx_wakeup owns two internal refcounts on the object being
 	// woken up. Two are needed for WLH wakeups where two threads need
 	// the object to remain valid in a non-coordinated way
@@ -262,6 +266,9 @@ DISPATCH_ENUM(dispatch_wakeup_flags, uint32_t,
 
 	// This wakeup may cause the source to leave its DSF_NEEDS_EVENT state
 	DISPATCH_WAKEUP_EVENT                   = 0x00000010,
+
+	// This wakeup is allowed to clear the ACTIVATING state of the object
+	DISPATCH_WAKEUP_CLEAR_ACTIVATING        = 0x00000020,
 );
 
 typedef struct dispatch_invoke_context_s {
@@ -288,7 +295,7 @@ typedef struct dispatch_invoke_context_s {
 #define dispatch_with_disabled_narrowing(dic, ...) __VA_ARGS__
 #endif
 
-DISPATCH_ENUM(dispatch_invoke_flags, uint32_t,
+DISPATCH_OPTIONS(dispatch_invoke_flags, uint32_t,
 	DISPATCH_INVOKE_NONE					= 0x00000000,
 
 	// Invoke modes
@@ -335,7 +342,7 @@ DISPATCH_ENUM(dispatch_invoke_flags, uint32_t,
 	// @const DISPATCH_INVOKE_THREAD_BOUND
 	// We're draining from the context of a thread-bound queue (main thread)
 	//
-	// @const DISPATCH_INVOKE_WORKER_DRAIN
+	// @const DISPATCH_INVOKE_WORKLOOP_DRAIN
 	// The queue at the bottom of this drain is a workloop that supports
 	// reordering.
 	//
@@ -359,7 +366,7 @@ DISPATCH_ENUM(dispatch_invoke_flags, uint32_t,
 #define _DISPATCH_INVOKE_AUTORELEASE_MASK	  0x03000000u
 );
 
-enum {
+DISPATCH_OPTIONS(dispatch_object_flags, unsigned long,
 	_DISPATCH_META_TYPE_MASK		= 0x000000ff, // mask for object meta-types
 	_DISPATCH_TYPE_CLUSTER_MASK		= 0x000000f0, // mask for the cluster type
 	_DISPATCH_SUB_TYPE_MASK			= 0x0000ff00, // mask for object sub-types
@@ -419,8 +426,9 @@ enum {
 			_DISPATCH_QUEUE_BASE_TYPEFLAG,
 
 	DISPATCH_SOURCE_KEVENT_TYPE			= DISPATCH_OBJECT_SUBTYPE(1, SOURCE),
-	DISPATCH_MACH_CHANNEL_TYPE			= DISPATCH_OBJECT_SUBTYPE(2, SOURCE),
-};
+	DISPATCH_CHANNEL_TYPE				= DISPATCH_OBJECT_SUBTYPE(2, SOURCE),
+	DISPATCH_MACH_CHANNEL_TYPE			= DISPATCH_OBJECT_SUBTYPE(3, SOURCE),
+);
 
 typedef struct _os_object_vtable_s {
 	_OS_OBJECT_CLASS_HEADER();
@@ -428,7 +436,7 @@ typedef struct _os_object_vtable_s {
 
 typedef struct _os_object_s {
 	_OS_OBJECT_HEADER(
-	const _os_object_vtable_s *os_obj_isa,
+	const _os_object_vtable_s *__ptrauth_objc_isa_pointer os_obj_isa,
 	os_obj_ref_cnt,
 	os_obj_xref_cnt);
 } _os_object_s;
@@ -443,7 +451,7 @@ typedef struct _os_object_s {
 #else
 #define OS_OBJECT_STRUCT_HEADER(x) \
 	_OS_OBJECT_HEADER(\
-	const struct x##_vtable_s *do_vtable, \
+	const struct x##_vtable_s *__ptrauth_objc_isa_pointer do_vtable, \
 	do_ref_cnt, \
 	do_xref_cnt)
 #endif
@@ -454,7 +462,10 @@ typedef struct _os_object_s {
 	struct dispatch_##x##_s *volatile do_next; \
 	struct dispatch_queue_s *do_targetq; \
 	void *do_ctxt; \
-	void *do_finalizer
+	union { \
+		dispatch_function_t DISPATCH_FUNCTION_POINTER do_finalizer; \
+		void *do_introspection_ctxt; \
+	}
 
 #define DISPATCH_OBJECT_HEADER(x) \
 	struct dispatch_object_s _as_do[0]; \
@@ -467,6 +478,9 @@ typedef struct _os_object_s {
 		return [super init]; \
 	}
 
+#define DISPATCH_OBJECT_USES_XREF_DISPOSE() \
+		OS_OBJECT_USES_XREF_DISPOSE()
+
 _OS_OBJECT_DECL_PROTOCOL(dispatch_object, object);
 DISPATCH_CLASS_DECL_BARE(object, OBJECT);
 
@@ -474,14 +488,13 @@ struct dispatch_object_s {
 	_DISPATCH_OBJECT_HEADER(object);
 };
 
+DISPATCH_COLD
 size_t _dispatch_object_debug_attr(dispatch_object_t dou, char* buf,
 		size_t bufsiz);
 void *_dispatch_object_alloc(const void *vtable, size_t size);
 void _dispatch_object_finalize(dispatch_object_t dou);
 void _dispatch_object_dealloc(dispatch_object_t dou);
-#if !USE_OBJC
 void _dispatch_xref_dispose(dispatch_object_t dou);
-#endif
 void _dispatch_dispose(dispatch_object_t dou);
 #if DISPATCH_COCOA_COMPAT
 #if USE_OBJC
@@ -527,7 +540,7 @@ OS_OBJECT_OBJC_CLASS_DECL(object);
 // This is required by the dispatch_data_t/NSData bridging, which is not
 // supported on the old runtime.
 #define DISPATCH_OBJECT_TFB(f, o, ...) \
-	if (unlikely(((uintptr_t)((o)._os_obj->os_obj_isa) & 1) || \
+	if (unlikely(((*(uintptr_t *)&((o)._os_obj->os_obj_isa)) & 1) || \
 			(Class)((o)._os_obj->os_obj_isa) < \
 					(Class)OS_OBJECT_VTABLE(dispatch_object) || \
 			(Class)((o)._os_obj->os_obj_isa) >= \
@@ -547,6 +560,7 @@ void _dispatch_objc_set_target_queue(dispatch_object_t dou,
 void _dispatch_objc_suspend(dispatch_object_t dou);
 void _dispatch_objc_resume(dispatch_object_t dou);
 void _dispatch_objc_activate(dispatch_object_t dou);
+DISPATCH_COLD
 size_t _dispatch_objc_debug(dispatch_object_t dou, char* buf, size_t bufsiz);
 
 #if __OBJC2__
@@ -581,7 +595,7 @@ size_t _dispatch_objc_debug(dispatch_object_t dou, char* buf, size_t bufsiz);
  *   reached -1.
  */
 #define _os_atomic_refcnt_perform2o(o, f, op, n, m)   ({ \
-		typeof(o) _o = (o); \
+		__typeof__(o) _o = (o); \
 		int _ref_cnt = _o->f; \
 		if (likely(_ref_cnt != _OS_OBJECT_GLOBAL_REFCNT)) { \
 			_ref_cnt = os_atomic_##op##2o(_o, f, n, m); \

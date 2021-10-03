@@ -32,8 +32,8 @@ struct dispatch_queue_s;
 DISPATCH_CLASS_DECL(semaphore, OBJECT);
 struct dispatch_semaphore_s {
 	DISPATCH_OBJECT_HEADER(semaphore);
-	long volatile dsema_value;
-	long dsema_orig;
+	intptr_t volatile dsema_value;
+	intptr_t dsema_orig;
 	_dispatch_sema4_t dsema_sema;
 };
 
@@ -97,10 +97,12 @@ _dg_state_gen(uint64_t dg_state)
 
 dispatch_group_t _dispatch_group_create_and_enter(void);
 void _dispatch_group_dispose(dispatch_object_t dou, bool *allow_free);
+DISPATCH_COLD
 size_t _dispatch_group_debug(dispatch_object_t dou, char *buf,
 		size_t bufsiz);
 
 void _dispatch_semaphore_dispose(dispatch_object_t dou, bool *allow_free);
+DISPATCH_COLD
 size_t _dispatch_semaphore_debug(dispatch_object_t dou, char *buf,
 		size_t bufsiz);
 

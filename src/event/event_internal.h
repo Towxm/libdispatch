@@ -99,7 +99,7 @@ typedef struct dispatch_wlh_s *dispatch_wlh_t; // opaque handle
 #define DISPATCH_WLH_ANON       ((dispatch_wlh_t)(void*)(~0x3ul))
 #define DISPATCH_WLH_MANAGER    ((dispatch_wlh_t)(void*)(~0x7ul))
 
-DISPATCH_ENUM(dispatch_unote_timer_flags, uint8_t,
+DISPATCH_OPTIONS(dispatch_unote_timer_flags, uint8_t,
 	/* DISPATCH_TIMER_STRICT 0x1 */
 	/* DISPATCH_TIMER_BACKGROUND = 0x2, */
 	DISPATCH_TIMER_CLOCK_UPTIME = DISPATCH_CLOCK_UPTIME << 2,
@@ -123,11 +123,17 @@ _dispatch_timer_flags_from_clock(dispatch_clock_t clock)
 	return (dispatch_unote_timer_flags_t)(clock << 2);
 }
 
+#if defined(_WIN32)
+typedef uintptr_t dispatch_unote_ident_t;
+#else
+typedef uint32_t dispatch_unote_ident_t;
+#endif
+
 #define DISPATCH_UNOTE_CLASS_HEADER() \
-	dispatch_source_type_t du_type; \
+	dispatch_source_type_t __ptrauth_objc_isa_pointer du_type; \
 	uintptr_t du_owner_wref; /* "weak" back reference to the owner object */ \
 	os_atomic(dispatch_unote_state_t) du_state; \
-	uint32_t  du_ident; \
+	dispatch_unote_ident_t du_ident; \
 	int8_t    du_filter; \
 	uint8_t   du_is_direct : 1; \
 	uint8_t   du_is_timer : 1; \
@@ -245,7 +251,7 @@ void dispatch_debug_machport(mach_port_t name, const char *str);
 // layout must match dispatch_source_refs_s
 struct dispatch_mach_recv_refs_s {
 	DISPATCH_UNOTE_CLASS_HEADER();
-	dispatch_mach_handler_function_t dmrr_handler_func;
+	dispatch_mach_handler_function_t DISPATCH_FUNCTION_POINTER dmrr_handler_func;
 	void *dmrr_handler_ctxt;
 };
 typedef struct dispatch_mach_recv_refs_s *dispatch_mach_recv_refs_t;
@@ -298,6 +304,9 @@ struct dispatch_xpc_term_refs_s {
 	DISPATCH_UNOTE_CLASS_HEADER();
 };
 typedef struct dispatch_xpc_term_refs_s *dispatch_xpc_term_refs_t;
+void _dispatch_sync_ipc_handoff_begin(dispatch_wlh_t wlh, mach_port_t port,
+		uint64_t _Atomic *addr);
+void _dispatch_sync_ipc_handoff_end(dispatch_wlh_t wlh, mach_port_t port);
 #endif // HAVE_MACH
 
 typedef union dispatch_unote_u {
@@ -341,6 +350,7 @@ typedef struct dispatch_source_type_s {
 	dispatch_unote_action_t dst_action;
 	uint8_t    dst_per_trigger_qos : 1;
 	uint8_t    dst_strict : 1;
+	uint8_t    dst_allow_empty_mask : 1;
 	uint8_t    dst_timer_flags;
 	uint16_t   dst_flags;
 #if DISPATCH_EVENT_BACKEND_KEVENT
@@ -351,7 +361,7 @@ typedef struct dispatch_source_type_s {
 	uint32_t   dst_size;
 
 	dispatch_unote_t (*dst_create)(dispatch_source_type_t dst,
-			uintptr_t handle, unsigned long mask);
+			uintptr_t handle, uintptr_t mask);
 #if DISPATCH_EVENT_BACKEND_KEVENT
 	bool (*dst_update_mux)(struct dispatch_muxnote_s *dmn);
 #endif
@@ -378,9 +388,9 @@ extern const dispatch_source_type_s _dispatch_mach_type_send;
 extern const dispatch_source_type_s _dispatch_mach_type_recv;
 extern const dispatch_source_type_s _dispatch_mach_type_reply;
 extern const dispatch_source_type_s _dispatch_xpc_type_sigterm;
-extern const dispatch_source_type_s _dispatch_source_type_timer_with_clock;
 #define DISPATCH_MACH_TYPE_WAITER ((const dispatch_source_type_s *)-2)
 #endif
+extern const dispatch_source_type_s _dispatch_source_type_timer_with_clock;
 
 #pragma mark -
 #pragma mark deferred items
@@ -610,11 +620,11 @@ _dispatch_timer_unote_compute_missed(dispatch_timer_source_refs_t dt,
 extern struct dispatch_timer_heap_s _dispatch_timers_heap[DISPATCH_TIMER_COUNT];
 
 dispatch_unote_t _dispatch_unote_create_with_handle(dispatch_source_type_t dst,
-		uintptr_t handle, unsigned long mask);
+		uintptr_t handle, uintptr_t mask);
 dispatch_unote_t _dispatch_unote_create_with_fd(dispatch_source_type_t dst,
-		uintptr_t handle, unsigned long mask);
+		uintptr_t handle, uintptr_t mask);
 dispatch_unote_t _dispatch_unote_create_without_handle(
-		dispatch_source_type_t dst, uintptr_t handle, unsigned long mask);
+		dispatch_source_type_t dst, uintptr_t handle, uintptr_t mask);
 void _dispatch_unote_dispose(dispatch_unote_t du);
 
 /*
@@ -654,7 +664,9 @@ void _dispatch_unote_resume_direct(dispatch_unote_t du);
 
 void _dispatch_timer_unote_configure(dispatch_timer_source_refs_t dt);
 
+#if !DISPATCH_EVENT_BACKEND_WINDOWS
 void _dispatch_event_loop_atfork_child(void);
+#endif
 #define DISPATCH_EVENT_LOOP_CONSUME_2 DISPATCH_WAKEUP_CONSUME_2
 #define DISPATCH_EVENT_LOOP_OVERRIDE  0x80000000
 void _dispatch_event_loop_poke(dispatch_wlh_t wlh, uint64_t dq_state,
@@ -664,6 +676,7 @@ void _dispatch_event_loop_wake_owner(struct dispatch_sync_context_s *dsc,
 		dispatch_wlh_t wlh, uint64_t old_state, uint64_t new_state);
 void _dispatch_event_loop_wait_for_ownership(
 		struct dispatch_sync_context_s *dsc);
+void _dispatch_event_loop_ensure_ownership(dispatch_wlh_t wlh);
 void _dispatch_event_loop_end_ownership(dispatch_wlh_t wlh,
 		uint64_t old_state, uint64_t new_state, uint32_t flags);
 #if DISPATCH_WLH_DEBUG

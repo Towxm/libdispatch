@@ -48,6 +48,8 @@ _OBJC_CLASS_$_OS_dispatch_queue_attr
 __OS_dispatch_queue_attr_vtable
 _OBJC_CLASS_$_OS_dispatch_source
 __OS_dispatch_source_vtable
+_OBJC_CLASS_$_OS_dispatch_channel
+__OS_dispatch_channel_vtable
 _OBJC_CLASS_$_OS_dispatch_mach
 __OS_dispatch_mach_vtable
 _OBJC_CLASS_$_OS_dispatch_mach_msg
@@ -61,6 +63,10 @@ __OS_dispatch_disk_vtable
 # os_object_t classes
 _OBJC_CLASS_$_OS_object
 _OBJC_CLASS_$_OS_voucher
+_OBJC_CLASS_$_OS_os_eventlink
+_OBJC_CLASS_$_OS_os_workgroup
+_OBJC_CLASS_$_OS_os_workgroup_interval
+_OBJC_CLASS_$_OS_os_workgroup_parallel
 #_OBJC_CLASS_$_OS_voucher_recipe
 # non-os_object_t classes
 _OBJC_CLASS_$_OS_dispatch_data
@@ -80,6 +86,7 @@ _OBJC_METACLASS_$_OS_dispatch_queue_runloop
 _OBJC_METACLASS_$_OS_dispatch_queue_mgr
 _OBJC_METACLASS_$_OS_dispatch_queue_attr
 _OBJC_METACLASS_$_OS_dispatch_source
+_OBJC_METACLASS_$_OS_dispatch_channel
 _OBJC_METACLASS_$_OS_dispatch_mach
 _OBJC_METACLASS_$_OS_dispatch_mach_msg
 _OBJC_METACLASS_$_OS_dispatch_io
@@ -87,6 +94,10 @@ _OBJC_METACLASS_$_OS_dispatch_operation
 _OBJC_METACLASS_$_OS_dispatch_disk
 _OBJC_METACLASS_$_OS_object
 _OBJC_METACLASS_$_OS_voucher
+_OBJC_METACLASS_$_OS_os_eventlink
+_OBJC_METACLASS_$_OS_os_workgroup
+_OBJC_METACLASS_$_OS_os_workgroup_interval
+_OBJC_METACLASS_$_OS_os_workgroup_parallel
 #_OBJC_METACLASS_$_OS_voucher_recipe
 _OBJC_METACLASS_$_OS_dispatch_data
 _OBJC_METACLASS_$_OS_dispatch_data_empty
